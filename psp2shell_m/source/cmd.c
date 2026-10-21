@@ -443,6 +443,7 @@ void p2s_cmd_parse(s_client *client, P2S_CMD *cmd) {
 
         case CMD_TITLE:
             cmd_title();
+            break;
 
         case CMD_MOUNT:
             cmd_mount(cmd->args[0]);

@@ -12,6 +12,8 @@ set(SRC_FILES
         source/file.c
         source/module.c
         source/thread.c
+        source/ctl.c
+        source/md5.c
         ../common/p2s_cmd.c
         ../common/p2s_msg.c
         )
@@ -42,6 +44,7 @@ set(LDFLAGS
         SceNet_stub_weak
         SceNetCtl_stub_weak
         SceAppMgr_stub
+        ScePromoterUtil_stub_weak
         ScePower_stub
         k
         gcc

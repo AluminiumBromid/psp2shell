@@ -25,6 +25,8 @@
 #include "utility.h"
 #include "psp2shell.h"
 #include "libmodule.h"
+#include "ctl.h"
+#include "p2s_va.h"
 
 static SceUID thid_wait = -1;
 static SceUID thid_kbuf = -1;
@@ -67,6 +69,7 @@ static void close_server() {
         server_sock_log = -1;
     }
 #endif
+    ctl_close();
 }
 
 static int open_server() {
@@ -85,6 +88,8 @@ static int open_server() {
     // the shell still works without the log port
     server_sock_log = p2s_bind_port(server_sock_log, listen_port + 2);
 #endif
+    // ... and without the control port
+    ctl_open(listen_port + 3);
 
     return 0;
 }
@@ -109,16 +114,27 @@ static void p2s_msg_wait_reply() {
 
 void psp2shell_print_color(int color, const char *fmt, ...) {
 
+    // output of a legacy command run through the control port goes back to that client
+    if (ctl_capturing()) {
+        char text[P2S_KMSG_SIZE];
+        P2S_VA_LIST args;
+        P2S_VA_START(args, fmt);
+        vsnprintf(text, P2S_KMSG_SIZE, fmt, P2S_VA_ARGS(args));
+        P2S_VA_END(args);
+        ctl_capture(color, text);
+        return;
+    }
+
     if (client->msg_sock < 0) {
         return;
     }
 
     client->msg.color = color;
     memset(client->msg.buffer, 0, P2S_KMSG_SIZE);
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(client->msg.buffer, P2S_KMSG_SIZE, fmt, args);
-    va_end(args);
+    P2S_VA_LIST args;
+    P2S_VA_START(args, fmt);
+    vsnprintf(client->msg.buffer, P2S_KMSG_SIZE, fmt, P2S_VA_ARGS(args));
+    P2S_VA_END(args);
 
     if (client->msg_sock >= 0) {
 
@@ -223,6 +239,8 @@ static int thread_wait(SceSize args, void *argp) {
         log_thread_started = 1;
     }
 #endif
+
+    ctl_start();
 
     // accept incoming connections
     printf("Waiting for connections...\n");
@@ -394,6 +412,8 @@ int module_start(SceSize argc, const void *args) {
     client->msg_sock = -1;
     client->cmd_sock = -1;
 
+    ctl_init();
+
 #ifndef DEBUG
     for (int i = 0; i < LOG_CLIENTS_MAX; i++) {
         log_socks[i] = -1;
@@ -456,6 +476,8 @@ void psp2shell_exit() {
         }
     }
 #endif
+
+    ctl_exit();
 
     printf("close_server\n");
     close_server();

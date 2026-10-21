@@ -57,6 +57,16 @@ nc ip 3335
 `psp2shell_cli` connects to it automatically; set `PSP2SHELL_NO_LOG=1` to leave it to another reader.
 When no log reader is connected, logs are sent through the shell connection as before.
 
+**Control port (3336)**
+
+A line-based request/response protocol for scripts and tools, next to the interactive shell:
+files (`ls`, `stat`, `md5`, `mkdir -p`, `rm`, `rmdir -r`, `mv`, `get`, `put`), `install` of an
+unpacked VPK directory through ScePromoterUtil, `destroy`, and the shell's module/thread/memory
+commands. See [CTL_PROTOCOL.md](CTL_PROTOCOL.md). Quick check:
+```
+printf 'hello\n' | nc ip 3336
+```
+
 **Update, restart your application**
 
 Re-build your application then, from the shell, you can send the newly complied version of your application, and restart it automatically :

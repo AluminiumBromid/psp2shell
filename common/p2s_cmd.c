@@ -48,6 +48,7 @@ int sceClibPrintf(const char *, ...);
 #endif
 
 #include "p2s_cmd.h"
+#include "p2s_va.h"
 
 int p2s_cmd_receive(int sock, P2S_CMD *cmd) {
 
@@ -133,10 +134,10 @@ void p2s_cmd_send_fmt(int sock, const char *fmt, ...) {
 
     char buffer[P2S_SIZE_CMD];
     memset(buffer, 0, P2S_SIZE_CMD);
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, P2S_SIZE_CMD, fmt, args);
-    va_end(args);
+    P2S_VA_LIST args;
+    P2S_VA_START(args, fmt);
+    vsnprintf(buffer, P2S_SIZE_CMD, fmt, P2S_VA_ARGS(args));
+    P2S_VA_END(args);
 
     send(sock, buffer, strlen(buffer), 0);
 }
