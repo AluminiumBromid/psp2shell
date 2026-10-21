@@ -19,6 +19,8 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/kernel/cpu.h>
+#include <psp2kern/kernel/cpu/spinlock.h>
+#include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/io/fcntl.h>
 #include <taihen.h>
 
@@ -32,53 +34,76 @@ static SceUID g_hooks[MAX_HOOKS];
 static tai_hook_ref_t ref_hooks[MAX_HOOKS];
 static int __stdout_fd = 1073807367;
 
-static bool ready = false;
-
-static kp2s_msg kmsg_list[MSG_MAX];
-
 int (* _ksceKernelGetModuleList)(SceUID pid, int flags1, int flags2, SceUID *modids, size_t *num);
 int (* _ksceKernelGetModuleInfo)(SceUID pid, SceUID modid, SceKernelModuleInfo *info);
 
-static void kp2s_add_msg(int len, const char *msg) {
-    for (int i = 0; i < MSG_MAX; i++) {
-        if (kmsg_list[i].len <= 0) {
-            memset(kmsg_list[i].msg, 0, P2S_MSG_LEN);
-            int new_len = len > P2S_MSG_LEN ? P2S_MSG_LEN : len;
-            strncpy(kmsg_list[i].msg, msg, (size_t) new_len);
-            kmsg_list[i].len = new_len;
-            break;
-        }
+// Log ring buffer. head/tail are free-running byte counters; the ring always keeps the newest
+// output, so logs from boot are still there when the first client connects.
+static char log_ring[P2S_LOG_RING_SIZE];
+static SceUInt32 log_head;
+static SceUInt32 log_tail;
+static SceUInt32 log_dropped;
+static int log_line_start = 1;
+static SceKernelSpinlock log_lock;
+static char log_read_buf[CHUNK_SIZE];
+
+static void log_putc(char c) {
+    if (log_head - log_tail == P2S_LOG_RING_SIZE) {
+        log_tail++;
+        log_dropped++;
     }
+    log_ring[log_head & (P2S_LOG_RING_SIZE - 1)] = c;
+    log_head++;
+}
+
+static void log_write(const char *data, SceSize len) {
+    // "[seconds.micros pid] " in front of every line
+    char prefix[32];
+    SceUInt64 now = (SceUInt64) ksceKernelGetSystemTimeWide();
+    int prefix_len = snprintf(prefix, sizeof(prefix), "[%5u.%06u %08X] ",
+                              (unsigned int) (now / 1000000), (unsigned int) (now % 1000000),
+                              (unsigned int) ksceKernelGetProcessId());
+
+    SceKernelIntrStatus intr = ksceKernelSpinlockLowLockCpuSuspendIntr(&log_lock);
+    for (SceSize i = 0; i < len; i++) {
+        if (log_line_start) {
+            for (int j = 0; j < prefix_len; j++) {
+                log_putc(prefix[j]);
+            }
+        }
+        log_putc(data[i]);
+        log_line_start = data[i] == '\n';
+    }
+    ksceKernelSpinlockLowUnlockCpuResumeIntr(&log_lock, intr);
 }
 
 static int ksceDebugPrintf_hook(const char *fmt, ...) {
     char temp_buf[P2S_MSG_LEN];
-    memset(temp_buf, 0, P2S_MSG_LEN);
     va_list args;
     va_start(args, fmt);
     int len = vsnprintf(temp_buf, P2S_MSG_LEN, fmt, args);
     va_end(args);
 
-    if (ready) {
-        kp2s_add_msg(len, temp_buf);
+    if (len > 0) {
+        log_write(temp_buf, len < P2S_MSG_LEN ? (SceSize) len : P2S_MSG_LEN - 1);
     }
 
-    return TAI_CONTINUE(int, ref_hooks[2], fmt, args);
+    // the va_list can't be forwarded to a variadic function, pass the formatted text instead
+    return TAI_CONTINUE(int, ref_hooks[2], "%s", temp_buf);
 }
 
 static int ksceDebugPrintf2_hook(int num0, int num1, const char *fmt, ...) {
     char temp_buf[P2S_MSG_LEN];
-    memset(temp_buf, 0, P2S_MSG_LEN);
     va_list args;
     va_start(args, fmt);
     int len = vsnprintf(temp_buf, P2S_MSG_LEN, fmt, args);
     va_end(args);
 
-    if (ready) {
-        kp2s_add_msg(len, temp_buf);
+    if (len > 0) {
+        log_write(temp_buf, len < P2S_MSG_LEN ? (SceSize) len : P2S_MSG_LEN - 1);
     }
 
-    return TAI_CONTINUE(int, ref_hooks[3], num0, num1, fmt, args);
+    return TAI_CONTINUE(int, ref_hooks[3], num0, num1, "%s", temp_buf);
 }
 
 static int sceIoWrite_hook(SceUID fd, const void *data, SceSize size) {
@@ -86,11 +111,15 @@ static int sceIoWrite_hook(SceUID fd, const void *data, SceSize size) {
         return 0;
     }
 
-    if (fd == __stdout_fd && ready && size < P2S_MSG_LEN) {
-        char temp_buf[size];
-        memset(temp_buf, 0, size);
-        ksceKernelStrncpyUserToKernel(temp_buf, data, size);
-        kp2s_add_msg((int) size, temp_buf);
+    if (fd == __stdout_fd) {
+        char temp_buf[P2S_MSG_LEN];
+        for (SceSize off = 0; off < size; off += P2S_MSG_LEN) {
+            SceSize len = size - off < P2S_MSG_LEN ? size - off : P2S_MSG_LEN;
+            if (ksceKernelMemcpyUserToKernel(temp_buf, (const char *) data + off, len) < 0) {
+                break;
+            }
+            log_write(temp_buf, len);
+        }
     }
 
     return TAI_CONTINUE(int, ref_hooks[0], fd, data, size);
@@ -107,28 +136,43 @@ static int sceKernelGetStdout_hook() {
     return fd;
 }
 
-SceSize kpsp2shell_wait_buffer(kp2s_msg *msg_list) {
-    SceSize count = 0;
-    int state = 0;
-
+int kpsp2shell_log_read(char *buf, SceSize size, SceUInt32 *dropped) {
+    int copied = 0;
+    SceUInt32 lost = 0;
+    uint32_t state;
     ENTER_SYSCALL(state);
 
-    for (int i = 0; i < MSG_MAX; i++) {
-        if (kmsg_list[i].len > 0) {
-            ksceKernelMemcpyKernelToUser(
-                    &msg_list[count], &kmsg_list[i], sizeof(kp2s_msg));
-            kmsg_list[i].len = 0;
-            count++;
+    while ((SceSize) copied < size) {
+        SceSize want = size - copied < CHUNK_SIZE ? size - copied : CHUNK_SIZE;
+
+        // copy out under the lock, touch user memory only after releasing it
+        SceKernelIntrStatus intr = ksceKernelSpinlockLowLockCpuSuspendIntr(&log_lock);
+        SceSize avail = log_head - log_tail;
+        SceSize n = avail < want ? avail : want;
+        for (SceSize i = 0; i < n; i++) {
+            log_read_buf[i] = log_ring[(log_tail + i) & (P2S_LOG_RING_SIZE - 1)];
         }
+        log_tail += n;
+        lost += log_dropped;
+        log_dropped = 0;
+        ksceKernelSpinlockLowUnlockCpuResumeIntr(&log_lock, intr);
+
+        if (n == 0) {
+            break;
+        }
+        if (ksceKernelMemcpyKernelToUser(buf + copied, log_read_buf, n) < 0) {
+            copied = -1;
+            break;
+        }
+        copied += n;
+    }
+
+    if (dropped != NULL) {
+        ksceKernelMemcpyKernelToUser(dropped, &lost, sizeof(lost));
     }
 
     EXIT_SYSCALL(state);
-
-    return count;
-}
-
-void kpsp2shell_set_ready(bool rdy) {
-    ready = rdy;
+    return copied;
 }
 
 int kpsp2shell_dump(SceUID pid, const char *filename, void *addr, unsigned int size) {

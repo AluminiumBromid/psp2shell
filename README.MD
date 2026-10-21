@@ -39,7 +39,23 @@ Connect to your ps vita device from your computer with the client (replace "ip" 
 ```
 ./psp2shell_cli ip 3333
 ```
-From there, you'll be able to see your sceClibPrintf messages coming in. Note that, to not miss some messages, the module wait for the shell on every print. This means your application will run slower if you use a lot of debug output.
+From there, you'll be able to see your sceClibPrintf messages coming in.
+
+**Log stream (port 3335)**
+
+Kernel and user debug output (`ksceDebugPrintf`, `sceClibPrintf`, stdout) is collected in a 64 KiB
+ring buffer in the kernel module, from boot on, whether or not a client is connected. Printing never
+waits for the network: when the buffer is full the oldest output is dropped and readers get a
+`[psp2shell: N bytes of log dropped]` note. Every line is prefixed with `[seconds.micros pid]`
+(time since boot, process id of the printer).
+
+The buffer is streamed as plain text on the shell port + 2 (3335), to up to 4 readers at once,
+independently of the shell session:
+```
+nc ip 3335
+```
+`psp2shell_cli` connects to it automatically; set `PSP2SHELL_NO_LOG=1` to leave it to another reader.
+When no log reader is connected, logs are sent through the shell connection as before.
 
 **Update, restart your application**
 

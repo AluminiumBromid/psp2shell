@@ -13,6 +13,8 @@ target_link_libraries(${PROJECT_NAME}
         SceSysmemForDriver_stub
         SceIofilemgrForDriver_stub
         SceSysclibForDriver_stub
+        SceCpuForDriver_stub
+        SceThreadmgrForDriver_stub
         )
 
 set_target_properties(${PROJECT_NAME}
