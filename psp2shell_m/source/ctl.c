@@ -26,6 +26,7 @@
 #include <psp2/appmgr.h>
 #include <psp2/sysmodule.h>
 #include <psp2/promoterutil.h>
+#include <taihen.h>
 
 #include "libmodule.h"
 
@@ -533,6 +534,49 @@ static void cmd_install(ctl_conn *c, const char *dir) {
     }
 }
 
+// sceAppMgrGetStatusByName is looked up at runtime instead of imported: a psp2shell build that
+// imported it (and sceAppMgrDestroyAppByName) hung SceShell at boot on fw 3.65 (2026-10-22).
+// With a runtime lookup the module's imports stay unchanged; if the lookup fails, appstate reports
+// an error and nothing else is affected.
+#define SCE_APPMGR_USER_LIBNID 0xA6605D6F
+#define SCE_APPMGR_GET_STATUS_BY_NAME_NID 0x656E0ABD
+
+typedef int (*GetStatusByNameFn)(const char *name, SceAppMgrAppState *state);
+static GetStatusByNameFn get_status_by_name = NULL;
+static const char *get_status_by_name_module = NULL;
+static int get_status_by_name_res = 0;
+
+static GetStatusByNameFn find_get_status_by_name() {
+    static const char *modules[] = {"SceDriverUser", "SceAppMgrUser", "SceAppMgr"};
+    if (get_status_by_name == NULL) {
+        for (unsigned int i = 0; i < sizeof(modules) / sizeof(modules[0]); i++) {
+            uintptr_t func = 0;
+            get_status_by_name_res = taiGetModuleExportFunc(modules[i], SCE_APPMGR_USER_LIBNID,
+                                                            SCE_APPMGR_GET_STATUS_BY_NAME_NID, &func);
+            if (get_status_by_name_res >= 0 && func != 0) {
+                get_status_by_name = (GetStatusByNameFn) func;
+                get_status_by_name_module = modules[i];
+                break;
+            }
+        }
+    }
+    return get_status_by_name;
+}
+
+static void cmd_appstate(ctl_conn *c, const char *titleid) {
+    GetStatusByNameFn fn = find_get_status_by_name();
+    if (fn == NULL) {
+        ctl_err(c, get_status_by_name_res, "appstate not supported (sceAppMgrGetStatusByName not found)");
+        return;
+    }
+    SceAppMgrAppState state;
+    memset(&state, 0, sizeof(state));
+    int res = fn(titleid, &state);
+    // 0: the app is running; anything else (e.g. 0x80800002) means it isn't
+    ctl_data(c, "%s %s", res == 0 ? "running" : "stopped", get_status_by_name_module);
+    ctl_ok(c);
+}
+
 typedef struct {
     const char *name;
     int type;
@@ -640,6 +684,10 @@ static void execute(ctl_conn *c, int argc, char **argv) {
         usage = "install <dir>";
         NEED(2);
         cmd_install(c, argv[1]);
+    } else if (strcmp(name, "appstate") == 0) {
+        usage = "appstate <titleid>";
+        NEED(2);
+        cmd_appstate(c, argv[1]);
     } else if (strcmp(name, "destroy") == 0) {
         sceAppMgrDestroyOtherApp();
         ctl_ok(c);

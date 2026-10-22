@@ -47,6 +47,7 @@ Paths are absolute (`ux0:/...`, `ux0:data/...`); there is no working directory.
 | `get` / `put` | see above | |
 | `install <dir>` | | promote an unpacked VPK directory (needs `sce_sys/param.sfo` and `sce_sys/package/head.bin`) via ScePromoterUtil. The directory is consumed. |
 | `destroy` | | close all running apps (`sceAppMgrDestroyOtherApp`) |
+| `appstate <titleid>` | `* running <module>` / `* stopped <module>` | `sceAppMgrGetStatusByName`, looked up at runtime (`<module>` = where it was found); `ERR` if not available |
 
 Legacy shell commands also work and return their usual text as data lines; anything they print
 as an error turns the status into `ERR`: `launch <titleid>`, `title`, `reset`, `reboot`,
