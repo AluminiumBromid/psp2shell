@@ -221,6 +221,7 @@ void psp2shell_print_color(int color, const char *fmt, ...) {
 }
 void p2s_cmd_parse(s_client *c, P2S_CMD *cmd) {
     if (cmd->type == CMD_TITLE) psp2shell_print_color(13, "\n\n\tname: SceShell\n\tpid: 0x000118C7\n\n");
+    else if (cmd->type == CMD_LAUNCH) sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=PSPEMUCFW"); // legacy launch
     else if (cmd->type == CMD_MEMR) psp2shell_print_color(COL_RED, "bad address %s\n", cmd->args[0]);
 }
 
