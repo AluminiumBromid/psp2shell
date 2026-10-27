@@ -20,10 +20,13 @@
 
 int msg_sock = -1;
 int cmd_sock = -1;
+int log_sock = -1;
 int done = 0;
 char **_argv;
 
 void *msg_thread(void *unused);
+
+void *log_thread(void *unused);
 
 // readline
 char history_path[512];
@@ -79,8 +82,33 @@ void sig_handler(int sig) {
 void close_socks() {
     close(msg_sock);
     close(cmd_sock);
+    if (log_sock >= 0) {
+        close(log_sock);
+    }
     msg_sock = -1;
     cmd_sock = -1;
+    log_sock = -1;
+}
+
+// single connection attempt, -1 if nobody listens
+int connect_once(char *ip, int port) {
+
+    struct sockaddr_in addr;
+    bzero((char *) &addr, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(ip);
+    addr.sin_port = htons((uint16_t) port);
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        return -1;
+    }
+    if (connect(sock, (struct sockaddr *) &addr, sizeof(struct sockaddr)) < 0) {
+        close(sock);
+        return -1;
+    }
+
+    return sock;
 }
 
 int get_sock(int sock, char *ip, int port, bool verbose) {
@@ -139,6 +167,17 @@ int connect_psp2(char *address, int port) {
         printf("get_sock failed (port=%i)\n", port + 1);
         close(msg_sock);
         return cmd_sock;
+    }
+
+    // Device logs come on their own port (port + 2). Older modules don't have it and mix
+    // logs into msg_sock instead. PSP2SHELL_NO_LOG=1 leaves the log port to another reader.
+    if (getenv("PSP2SHELL_NO_LOG") == NULL) {
+        log_sock = connect_once(address, port + 2);
+        pthread_t log_tid;
+        if (log_sock >= 0 && pthread_create(&log_tid, NULL, log_thread, NULL) != 0) {
+            close(log_sock);
+            log_sock = -1;
+        }
     }
 
     setup_terminal();
@@ -249,6 +288,26 @@ void *msg_thread(void *unused) {
 
     // restart
     execvp(_argv[0], _argv);
+}
+
+void *log_thread(void *unused) {
+
+    char buffer[4096];
+
+    while (true) {
+        ssize_t len = recv(log_sock, buffer, sizeof(buffer), 0);
+        if (len <= 0) {
+            break;
+        }
+        fwrite(buffer, 1, (size_t) len, stdout);
+        fflush(stdout);
+        if (buffer[len - 1] == '\n' && readline_callback) {
+            rl_refresh_line(0, 0);
+        }
+    }
+
+    // msg_thread notices the disconnect and restarts the client
+    return NULL;
 }
 
 void process_line(char *line) {

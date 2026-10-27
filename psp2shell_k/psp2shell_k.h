@@ -13,17 +13,15 @@ extern int module_get_export_func(SceUID pid, const char *modname, uint32_t libn
 #include <psp2/kernel/modulemgr.h>
 #endif
 
+// longest single printf captured by the kernel hooks (kept small, they run on arbitrary kernel stacks)
 #define P2S_MSG_LEN 256
-#define MSG_MAX 64
+// kernel log ring buffer, must be a power of two
+#define P2S_LOG_RING_SIZE (64 * 1024)
 
-typedef struct _kp2s_msg {
-    char msg[P2S_MSG_LEN];
-    int len;
-} kp2s_msg;
-
-void kpsp2shell_set_ready(bool ready);
-
-SceSize kpsp2shell_wait_buffer(kp2s_msg *msg_list);
+// Copy up to size bytes of buffered log output to buf (user memory) and consume them.
+// If dropped is not NULL, it receives the number of bytes lost to ring overflow since the last read.
+// Single reader only. Returns the number of bytes copied or a negative error.
+int kpsp2shell_log_read(char *buf, SceSize size, SceUInt32 *dropped);
 
 int kpsp2shell_get_module_info(SceUID pid, SceUID uid, SceKernelModuleInfo *info);
 
